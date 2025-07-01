@@ -1,46 +1,70 @@
-from scapy.all import sniff, IP, TCP
-import logging
-import subprocess
+import scapy.all as scapy
+import os
+import time
 
-# List of allowed IPs
-allowed_ips = ["192.168.1.100", "192.168.1.101"]  # Replace with your allowed IPs
+# Define the IP of Metasploitable2 and Kali
+METASPLOITABLE2_IP = "192.168.31.139"  # Replace with the actual IP of Metasploitable2
+KALI_IP = "192.168.31.135"  # Replace with Kali's IP
+ALLOWED_PORTS = [22,]  # Allow SSH and HTTP
 
-# List of allowed ports (e.g., SSH: 22, HTTP: 80)
-allowed_ports = [22, 80]
+# Log rotation settings
+LOG_FILE = "firewall_log.txt"
+MAX_LOG_SIZE = 1024 * 1024  # 1 MB
 
-# Logging setup
-logging.basicConfig(
-    filename='/tmp/firewall_logs.txt',
-    level=logging.INFO,
-    format='%(asctime)s - %(message)s'
-)
+# Define logging function with log rotation
+def log_packet(packet, message):
+    if os.path.getsize(LOG_FILE) > MAX_LOG_SIZE:
+        os.rename(LOG_FILE, f"firewall_log_{int(time.time())}.txt")
+    
+    with open(LOG_FILE, "a") as log_file:
+        log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {message} - {packet.summary()}\n")
 
-# Function to add iptables rule to block a specific IP
-def block_ip(ip):
-    subprocess.run(["sudo", "iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"])
-    logging.warning(f"Blocked IP: {ip}")
-    print(f"Blocked IP: {ip}")
+# Define the packet filtering function
+def packet_filter(packet):
+    if packet.haslayer(scapy.IP):
+        ip_src = packet[scapy.IP].src
+        ip_dst = packet[scapy.IP].dst
+        print(f"Packet from {ip_src} to {ip_dst}")
 
-# Function to add iptables rule to block a specific port
-def block_port(port):
-    subprocess.run(["sudo", "iptables", "-A", "INPUT", "-p", "tcp", "--dport", str(port), "-j", "DROP"])
-    logging.warning(f"Blocked port: {port}")
-    print(f"Blocked port: {port}")
+        # Custom Output 1: Blocking traffic from unauthorized sources to Metasploitable2
+        if ip_dst == METASPLOITABLE2_IP:
+            if ip_src != KALI_IP:  # Block packets from other IPs to Metasploitable2
+                message = f"Blocked packet from unauthorized source {ip_src} to {ip_dst}"
+                print(message)
+                log_packet(packet, message)
+                return  # Drop the packet
 
-# Function to process each packet
-def packet_callback(packet):
-    if packet.haslayer(IP):
-        ip_src = packet[IP].src
-        ip_dst = packet[IP].dst
-        protocol = packet[IP].proto
+            # Custom Output 2: Allow traffic from Kali to Metasploitable2
+            print(f"Allowed packet from Kali ({ip_src}) to Metasploitable2 ({ip_dst})")
+            message = f"Allowed packet from Kali ({ip_src}) to Metasploitable2 ({ip_dst})"
+            log_packet(packet, message)
+            return packet
 
-        # Check if the source IP is allowed
-        if ip_src not in allowed_ips:
-            logging.warning(f"Blocked packet from unauthorized IP: {ip_src} -> {ip_dst}")
-            print(f"Blocked packet from unauthorized IP: {ip_src} -> {ip_dst}")
-            block_ip(ip_src)
-            return
+        if packet.haslayer(scapy.TCP):
+            port = packet[scapy.TCP].dport  # Fixed closing bracket
+            print(f"Packet destination port: {port}")
 
-        # If packet is TCP, check the destination port
-        if packet.haslayer(TCP):
-            dst_port = packet[TCP].dport
+            # Custom Output 3: Block non-allowed ports (example: block everything except port 22 and 80)
+            if port not in ALLOWED_PORTS:
+                message = f"Blocked packet to port {port} (non-allowed)"
+                print(message)
+                log_packet(packet, message)
+                return  # Drop the packet
+
+    # Custom Output 4: Allow any other traffic and print summary
+    print(f"Allowed Packet: {packet.summary()}")
+    message = f"Allowed packet: {packet.summary()}"
+    log_packet(packet, message)
+    return packet
+
+# Start sniffing network traffic and apply the packet filter
+def start_firewall():
+    print(f"Starting custom firewall...")
+    scapy.sniff(prn=packet_filter, store=False)  # Listen on all interfaces
+
+if __name__ == "__main__":
+    start_firewall()  # No need to specify a network interface
+
+
+
+
